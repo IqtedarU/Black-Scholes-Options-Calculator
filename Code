@@ -1,0 +1,189 @@
+# Import necessary libraries
+from datetime import datetime
+import pandas as pd
+import scipy.stats as stats
+import math
+import matplotlib.pyplot as plt  # Import Matplotlib for visualization
+from fredapi import Fred
+from scipy.stats import norm
+
+# Create an empty portfolio DataFrame to store options positions
+portfolio = pd.DataFrame(columns=['Option Type', 'Underlying Asset', 'Current Price', 'Contracts',
+                                  'Strike Price', 'Expiration Date', 'Option Price', 'Implied Volatility'])
+def risk_free_rate():
+    fred = Fred(api_key='d877c54880a490a3e60295547b4cf1b2')
+    ten_year_treasury_rate = fred.get_series_latest_release('GS10')/100
+
+    risk_free_rate= ten_year_treasury_rate.iloc[-1]
+    return risk_free_rate
+
+# Function to add a new option to the portfolio
+def add_option_to_portfolio(portfolio, option_type, underlying_asset, current_price, contracts, strike_price, expiration_date, option_price, implied_volatility):
+    new_option = pd.DataFrame({'Option Type': [option_type],
+                            'Underlying Asset': [underlying_asset],
+                            'Current Price': current_price,
+                            'Contracts': [contracts],
+                            'Strike Price': [strike_price],
+                            'Expiration Date': [expiration_date],
+                            'Option Price': [option_price],
+                            'Implied Volatility': [implied_volatility]})
+    print(new_option)
+    return pd.concat([portfolio,new_option], ignore_index=True)
+
+
+# Function to calculate Delta, Gamma, Vega, Theta, Rho for a single option
+def calculate_option_metrics(option):
+    S = option['Current Price']
+    K = option['Strike Price']
+    expiration_date = datetime.strptime(option['Expiration Date'], '%Y-%m-%d')
+    T = (expiration_date - datetime.now()).days / 365.0  # Calculate time to expiration as a fraction of a year
+    r = risk_free_rate()
+    sigma = option['Implied Volatility']
+
+    # Calculate d1 and d2
+    d1 = (math.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+
+    # Calculate Delta, Gamma, Vega, Theta, Rho
+    delta = stats.norm.cdf(d1) if option['Option Type'] == 'Call' else -stats.norm.cdf(-d1)
+    gamma = stats.norm.pdf(d1) / (S * sigma * math.sqrt(T))
+    vega = S * stats.norm.pdf(d1) * math.sqrt(T)
+    theta = -(S * sigma * stats.norm.pdf(d1)) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * stats.norm.cdf(d2) if \
+    option['Option Type'] == 'Call' else (S * sigma * stats.norm.pdf(d1)) / (2 * math.sqrt(T)) + r * K * math.exp(
+        -r * T) * stats.norm.cdf(-d2)
+    rho = K * T * math.exp(-r * T) * stats.norm.cdf(d2) if option['Option Type'] == 'Call' else -K * T * math.exp(
+        -r * T) * stats.norm.cdf(-d2)
+
+    return delta, gamma, vega, theta, rho
+
+# Function to calculate portfolio-level metrics (e.g., total Delta, total Gamma)
+def calculate_portfolio_metrics():
+    global portfolio
+    total_delta = 0
+    total_gamma = 0
+    total_vega = 0
+    total_theta = 0
+    total_rho = 0
+
+    # Iterate through each option in the portfolio and calculate metrics
+    for index, option in portfolio.iterrows():
+        delta, gamma, vega, theta, rho = calculate_option_metrics(option)
+        total_delta += delta
+        total_gamma += gamma
+        total_vega += vega
+        total_theta += theta
+        total_rho += rho
+
+    return total_delta, total_gamma, total_vega, total_theta, total_rho
+
+def calculate_option_price(row):
+        S = row['Current Price']
+        K = row['Strike Price']
+        expiration_date = datetime.strptime(row['Expiration Date'], '%Y-%m-%d')
+        T = (expiration_date - datetime.now()).days / 365.0  # Calculate time to expiration as a fraction of a year
+        r = risk_free_rate()
+        sigma = row['Implied Volatility']
+        option_type = row['Option Type']
+
+        d1 = (math.log(S / K) + (r + (sigma ** 2) / 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+
+        if option_type == 'Call':
+            option_price = S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+        elif option_type == 'Put':
+            option_price = K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        else:
+            raise ValueError("Invalid option_type. Use 'Call' or 'Put'.")
+
+        return option_price
+
+def calculate_black_scholes_prices(portfolio):
+    portfolio['Black-Scholes Price'] = portfolio.apply(calculate_option_price, axis=1)
+    return portfolio
+
+def calculate_option_profit_loss(row):
+        option_price = row['Option Price']
+        contracts = row['Contracts']
+        black_scholes_price = row['Black-Scholes Price']
+        return contracts * (option_price - black_scholes_price)
+
+
+def calculate_portfolio_profit_loss(portfolio):
+    portfolio['Profit/Loss'] = portfolio.apply(calculate_option_profit_loss, axis=1)
+    return portfolio
+
+def visualize_main_portfolio(portfolio):
+    total_delta, total_gamma, total_vega, total_theta, total_rho = calculate_portfolio_metrics()
+
+    if portfolio.empty:
+        print("The portfolio is empty. Please add options to visualize.")
+        return
+
+    plt.figure(figsize=(10, 6))
+
+    # Create subplots for each metric
+    metrics_df = pd.DataFrame({
+        'Metric': ['Total Delta', 'Total Gamma', 'Total Vega', 'Total Theta', 'Total Rho'],
+        'Value': [total_delta, total_gamma, total_vega, total_theta, total_rho]
+    })
+    plt.figure(figsize=(10, 6))
+    plt.bar(metrics_df['Metric'], metrics_df['Value'])
+    plt.title('Portfolio Metrics')
+    plt.ylabel('Value')
+    plt.show()
+
+# Main program loop
+portfolio = add_option_to_portfolio(portfolio, 'Call', 'SPY', 430.3, 5,
+                                        440, '2023-09-25', 1.2, 0.6)
+portfolio = add_option_to_portfolio(portfolio, 'Put', 'SPY', 430.3, 5,
+                                        420, '2023-09-27', 2.2, 0.35)
+print(portfolio)
+while True:
+    print("\nOptions Risk Management Tool")
+    print("1. Add Option to Portfolio")
+    print("2. Calculate Portfolio Metrics")
+    print("3. Visualize Main Portfolio")
+    print("4. Calculate Portfolio Profit/Loss")
+    print("5. Exit")
+    choice = input("Select an option (1/2/3/4/5): ")
+
+    if choice == '1':
+        # User wants to add an option to the portfolio
+        option_type = input("Option Type (Call/Put): ")
+        underlying_asset = input("Underlying Asset: ")
+        current_price = input((f'Current Price of {underlying_asset} is: '))
+        contracts = int(input("Number of Contracts: "))
+        strike_price = float(input("Strike Price: "))
+        expiration_date = input("Expiration Date (YYYY-MM-DD): ")
+        option_price = float(input("Option Price: "))
+        implied_volatility = float(input("Implied Volatility: "))
+        portfolio = add_option_to_portfolio(portfolio, option_type, underlying_asset, current_price, contracts, strike_price, expiration_date, option_price, implied_volatility)
+        print("Option added to the portfolio.")
+        print("Current Portfolio: \n", portfolio)
+
+    elif choice == '2':
+        # User wants to calculate portfolio metrics
+        total_delta, total_gamma, total_vega, total_theta, total_rho = calculate_portfolio_metrics()
+        print("\nPortfolio Metrics:")
+        print(f"Total Delta: {total_delta}")
+        print(f"Total Gamma: {total_gamma}")
+        print(f"Total Vega: {total_vega}")
+        print(f"Total Theta: {total_theta}")
+        print(f"Total Rho: {total_rho}")
+
+    elif choice == '3':
+        # User wants to visualize the main portfolio
+        visualize_main_portfolio(portfolio)
+
+    elif choice == '4':
+        # User wants to exit the program
+        calculate_black_scholes_prices(portfolio)
+        calculate_portfolio_profit_loss(portfolio)
+        print(portfolio)
+        print(portfolio['Profit/Loss'].sum())
+    elif choice == '5':
+        # User wants to exit the program
+        print("Exiting the Options Risk Management Tool.")
+        break
+    else:
+        print("Invalid choice. Please select a valid option (1/2/3/4/5).")
